@@ -1,3 +1,0 @@
-[submodule "submodule/containerd"]
-	path = submodule/containerd
-	url = git@github.com:containerd/containerd.git
