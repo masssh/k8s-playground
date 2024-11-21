@@ -3,7 +3,7 @@ k8s_control_plane
 k8s_data_plane
 
 [k8s_control_plane]
-mynode1
+k8s-cp-001.masssh.com
 
 [k8s_data_plane]
-mynode2
+k8s-dp-001.masssh.com

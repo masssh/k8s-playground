@@ -1,0 +1,189 @@
+---
+- name: Install containerd runtime
+  hosts: k8s_nodes
+  become: yes
+  tasks:
+    - name: Update APT package index
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install required dependencies
+      ansible.builtin.apt:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - curl
+        - ca-certificates
+
+    - name: Download containerd binary
+      ansible.builtin.get_url:
+        url: "https://github.com/containerd/containerd/releases/download/v2.0.0/containerd-2.0.0-linux-arm64.tar.gz"
+        dest: /tmp/containerd.tar.gz
+
+    - name: Extract containerd binary
+      ansible.builtin.unarchive:
+        src: /tmp/containerd.tar.gz
+        dest: /usr/local
+        remote_src: yes
+
+    - name: Configure systemd for containerd
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=containerd container runtime
+          Documentation=https://containerd.io
+          After=network.target local-fs.target dbus.service
+
+          [Service]
+          ExecStartPre=-/sbin/modprobe overlay
+          ExecStart=/usr/local/bin/containerd
+
+          Type=notify
+          Delegate=yes
+          KillMode=process
+          Restart=always
+          RestartSec=5s
+          
+          # Having non-zero Limit*s causes performance problems due to accounting overhead
+          # in the kernel. We recommend using cgroups to do container-local accounting.
+          LimitNPROC=infinity
+          LimitCORE=infinity
+          
+          # Comment TasksMax if your systemd version does not supports it.
+          # Only systemd 226 and above support this version.
+          TasksMax=infinity
+          OOMScoreAdjust=-999
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/containerd.service
+        mode: '0644'
+
+    - name: Start and enable containerd service
+      ansible.builtin.systemd:
+        name: containerd
+        enabled: yes
+        state: started
+
+    - name: Clean up containerd archive
+      ansible.builtin.file:
+        path: /tmp/containerd.tar.gz
+        state: absent
+
+    - name: Configure containerd
+      ansible.builtin.command: |
+        containerd config default | tee /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+
+
+    #############################
+    # Install runc
+    #############################
+    - name: Download runc binary
+      ansible.builtin.get_url:
+        url: "https://github.com/opencontainers/runc/releases/download/v1.1.7/runc.arm64"
+        dest: /usr/local/sbin/runc
+        mode: '0755'
+
+    #############################
+    # Install CNI plugins
+    #############################
+    - name: Ensure /opt/cni/bin directory exists
+      file:
+        path: /opt/cni/bin
+        state: directory
+        mode: '0755'
+
+    - name: Download CNI plugins
+      get_url:
+        url: "https://github.com/containernetworking/plugins/releases/download/v1.6.0/cni-plugins-linux-arm64-v1.6.0.tgz"
+        dest: /tmp/cni-plugins.tgz
+        mode: '0644'
+
+    - name: Extract CNI plugins
+      unarchive:
+        src: /tmp/cni-plugins.tgz
+        dest: /opt/cni/bin
+        remote_src: true
+
+    - name: Ensure /etc/cni/net.d directory exists
+      file:
+        path: /etc/cni/net.d
+        state: directory
+        mode: '0755'
+
+    - name: Create CNI bridge configuration
+      copy:
+        dest: /etc/cni/net.d/10-containerd-net.conflist
+        content: |
+          {
+            "cniVersion": "1.0.0",
+            "name": "containerd-net",
+            "plugins": [
+              {
+                "type": "bridge",
+                "bridge": "cni0",
+                "isGateway": true,
+                "ipMasq": true,
+                "promiscMode": true,
+                "ipam": {
+                  "type": "host-local",
+                  "ranges": [
+                    [
+                      {"subnet": "10.88.0.0/16"}
+                    ]
+                  ],
+                  "routes": [
+                    {"dst": "0.0.0.0/0"}
+                  ]
+                }
+              }
+            ]
+          }
+        mode: '0644'
+
+    - name: Configure containerd to use CNI
+      blockinfile:
+        path: /etc/containerd/config.toml
+        block: |
+          [plugins."io.containerd.grpc.v1.cri".cni]
+            bin_dir = "/opt/cni/bin"
+            conf_dir = "/etc/cni/net.d"
+            max_conf_num = 1
+        create: yes
+
+    - name: Restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: true
+
+    #############################
+    # Install nerdctl
+    #############################
+    - name: Download nerdctl latest release
+      vars:
+        nerdctl_version: "2.0.0"  # 必要に応じてバージョンを指定
+      get_url:
+        url: "https://github.com/containerd/nerdctl/releases/download/v{{ nerdctl_version }}/nerdctl-{{ nerdctl_version }}-linux-arm64.tar.gz"
+        dest: "/tmp/nerdctl.tar.gz"
+
+    - name: Extract nerdctl binary
+      unarchive:
+        src: "/tmp/nerdctl.tar.gz"
+        dest: "/usr/local/bin/"
+        remote_src: yes
+
+    - name: Ensure nerdctl is executable
+      file:
+        path: "/usr/local/bin/nerdctl"
+        mode: '0755'
+
+    - name: Verify nerdctl installation
+      command: "nerdctl --version"
+      register: nerdctl_version_output
+
+    - name: Print nerdctl version
+      debug:
+        msg: "Installed nerdctl version: {{ nerdctl_version_output.stdout }}"

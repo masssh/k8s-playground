@@ -1,0 +1,169 @@
+---
+- name: Set up a Kubernetes cluster
+  hosts: k8s_nodes
+  become: yes
+  tasks:
+    ###################
+    # Disable swap
+    ###################
+    - name: Comment out swap entry in /etc/fstab
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: '^([^#].*swap.*)$'
+        line: '#\1'
+        backrefs: yes
+
+    - name: Disable swap immediately
+      ansible.builtin.command: swapoff -a
+      when: ansible_swaptotal_mb > 0
+      ignore_errors: yes
+
+    ###################
+    # Set up systemd
+    ###################
+    - name: "Load br_netfilter kernel module"
+      modprobe:
+        name: br_netfilter
+        state: present
+
+    - name: "Set bridge-nf-call-iptables"
+      sysctl:
+        name: net.bridge.bridge-nf-call-iptables
+        value: 1
+
+    - name: "Set ip_forward"
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: 1
+
+    ###################
+    # Install kubeadm
+    ###################
+    - name: Update APT package index
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gpg
+        state: present
+
+    - name: Ensure directory for keyring exists
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Add Kubernetes apt key
+      ansible.builtin.shell: |
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Add Kubernetes apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /"
+        state: present
+        filename: "kubernetes"
+
+    - name: Update APT package index
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: "Install kubeadm/kubelet/kubectl"
+      ansible.builtin.apt:
+        name:
+          - kubeadm
+          - kubelet
+          - kubectl
+        state: present
+
+    - name: "Start Kubelet"
+      systemd: name=kubelet daemon_reload=yes state=started enabled=yes
+
+##############################
+# Set up control plane
+##############################
+- name: Set up Control Plane
+  hosts: k8s_control_plane
+  vars:
+    pod_network_cidr: "192.168.0.0/16"
+    control_plane_endpoint: "k8s-api.masssh.com:6443"
+    unix_user: "masssh"
+  tasks:
+    - name: Check if already initialized
+      "ansible.builtin.shell": kubectl get nodes $(hostname)
+      register: kubeadm_init_check
+      ignore_errors: true
+    - name: Initialize kubeadm control plane with control-plane-endpoint
+      become: yes
+      command: "kubeadm init --pod-network-cidr={{ pod_network_cidr }} --control-plane-endpoint={{ control_plane_endpoint }}"
+      register: kubeadm_init_result
+      ignore_errors: true
+      when: kubeadm_init_check.rc != 0
+    - name: Create kubeadm join command
+      become: yes
+      command: "kubeadm token create --print-join-command"
+      register: kubeadm_join_command
+    - name: Create .kube directory if it does not exist
+      become: yes
+      file:
+        path: /home/{{ unix_user }}/.kube
+        state: directory
+        mode: '0755'
+        owner: "{{ unix_user }}"
+        group: "{{ unix_user }}"
+    - name: Copy admin.conf to user's kube config
+      become: yes
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/{{ unix_user }}/.kube/config
+        owner: "{{ unix_user }}"
+        group: "{{ unix_user }}"
+        mode: '0600'
+        remote_src: yes
+    - name: Fetch admin.conf from control plane
+      become: yes
+      fetch:
+        src: /etc/kubernetes/admin.conf
+        dest: /tmp/admin.conf
+        flat: yes
+
+##############################
+# Set up data plane
+##############################
+- name: Set up Data Plane
+  hosts: k8s_data_plane
+  vars:
+    pod_network_cidr: "192.168.0.0/16"
+    control_plane_endpoint: "k8s-api.masssh.com:6443"
+    unix_user: "masssh"
+  tasks:
+    - name: Check if already initialized
+      command: kubectl get nodes $(hostname)
+      register: kubeadm_init_check
+      ignore_errors: true
+    - name: Create .kube directory if it does not exist
+      become: yes
+      file:
+        path: /home/{{ unix_user }}/.kube
+        state: directory
+        mode: '0755'
+        owner: "{{ unix_user }}"
+        group: "{{ unix_user }}"
+    - name: Copy admin.conf to data plane
+      become: yes
+      copy:
+        src: /tmp/admin.conf
+        dest: "/home/{{ unix_user }}/.kube/config"
+        owner: "{{ unix_user }}"
+        group: "{{ unix_user }}"
+        mode: '0600'
+    - name: Join node2 to the Kubernetes cluster
+      become: yes
+      command: "{{ hostvars['k8s-cp-001.masssh.com']['kubeadm_join_command']['stdout'] }}"
+      when: kubeadm_init_check.rc != 0
