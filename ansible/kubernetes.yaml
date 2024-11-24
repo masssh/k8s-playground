@@ -31,6 +31,11 @@
         name: net.bridge.bridge-nf-call-iptables
         value: 1
 
+    - name: "Set bridge-nf-call-iptables"
+      sysctl:
+        name: net.bridge.bridge-nf-call-ip6tables
+        value: 1
+
     - name: "Set ip_forward"
       sysctl:
         name: net.ipv4.ip_forward
@@ -90,10 +95,6 @@
 ##############################
 - name: Set up Control Plane
   hosts: k8s_control_plane
-  vars:
-    pod_network_cidr: "192.168.0.0/16"
-    control_plane_endpoint: "k8s-api.masssh.com:6443"
-    unix_user: "masssh"
   tasks:
     - name: Check if already initialized
       "ansible.builtin.shell": kubectl get nodes $(hostname)
@@ -101,7 +102,7 @@
       ignore_errors: true
     - name: Initialize kubeadm control plane with control-plane-endpoint
       become: yes
-      command: "kubeadm init --pod-network-cidr={{ pod_network_cidr }} --control-plane-endpoint={{ control_plane_endpoint }}"
+      command: "kubeadm init --pod-network-cidr={{ pod_network_cidr }} --service-cidr={{ service_network_cidr }} --control-plane-endpoint={{ control_plane_endpoint }}"
       register: kubeadm_init_result
       ignore_errors: true
       when: kubeadm_init_check.rc != 0
@@ -109,6 +110,8 @@
       become: yes
       command: "kubeadm token create --print-join-command"
       register: kubeadm_join_command
+    - debug:
+        var: kubeadm_join_command
     - name: Create .kube directory if it does not exist
       become: yes
       file:
@@ -138,13 +141,9 @@
 ##############################
 - name: Set up Data Plane
   hosts: k8s_data_plane
-  vars:
-    pod_network_cidr: "192.168.0.0/16"
-    control_plane_endpoint: "k8s-api.masssh.com:6443"
-    unix_user: "masssh"
   tasks:
     - name: Check if already initialized
-      command: kubectl get nodes $(hostname)
+      "ansible.builtin.shell": kubectl get nodes $(hostname)
       register: kubeadm_init_check
       ignore_errors: true
     - name: Create .kube directory if it does not exist

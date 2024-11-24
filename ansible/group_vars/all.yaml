@@ -1,0 +1,5 @@
+network_cidr: "10.88.0.0/16"
+pod_network_cidr: "10.88.0.0/17"
+service_network_cidr: "10.88.128.0/17"
+control_plane_endpoint: "k8s-api.masssh.com:6443"
+unix_user: "masssh"

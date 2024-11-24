@@ -122,7 +122,7 @@
             "name": "containerd-net",
             "plugins": [
               {
-                "type": "bridge",
+                "type": "flannel",
                 "bridge": "cni0",
                 "isGateway": true,
                 "ipMasq": true,
@@ -131,7 +131,7 @@
                   "type": "host-local",
                   "ranges": [
                     [
-                      {"subnet": "10.88.0.0/16"}
+                      {"subnet": "{{ network_cidr }}"}
                     ]
                   ],
                   "routes": [
